@@ -1,0 +1,13 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "type": "shell",
+      "label": "Initialize Node.js project with TypeScript in typescript/cron-parser",
+      "command": "npm init -y && npm install typescript @types/node --save-dev && npx tsc --init",
+      "group": "build",
+      "isBackground": false,
+      "problemMatcher": []
+    }
+  ]
+}
