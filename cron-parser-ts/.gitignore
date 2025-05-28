@@ -17,3 +17,6 @@ vite.config.ts.timestamp-*
 
 # WinMerge etc.
 *.bak
+
+# coverage
+/coverage
