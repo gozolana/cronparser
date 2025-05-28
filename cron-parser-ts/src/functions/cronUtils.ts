@@ -26,7 +26,7 @@ const getTimezoneOffset = (): string => {
 }
 
 /**
- * Formats a Date object with specified type.
+ * Formats a Date object with specified formatType.
  * - Local: YYYY/MM/DD HH:mm
  * - LocalwithOffset: YYYY/MM/DD HH:mm(+/-HH:MM)
  * - UTC: YYYY/MM/DD HH:mm(UTC)
@@ -35,8 +35,11 @@ const getTimezoneOffset = (): string => {
  * @param {Date} date The date to format.
  * @returns {string} The formatted datetime string.
  */
-const formatDate = (date: Date, type: 'Local' | 'LocalwithOffset' | 'UTC' = 'Local'): string => {
-    if (type == 'UTC') {
+const formatDate = (date: Date, formatType: 'Local' | 'LocalwithOffset' | 'UTC' = 'Local'): string => {
+    if (isNaN(date.getTime())) {
+        return 'Invalid Date';
+    }
+    if (formatType == 'UTC') {
         const yyyy = date.getUTCFullYear();
         const MM = ('00' + (date.getUTCMonth() + 1)).slice(-2);
         const dd = ('00' + date.getUTCDate()).slice(-2);
@@ -51,24 +54,157 @@ const formatDate = (date: Date, type: 'Local' | 'LocalwithOffset' | 'UTC' = 'Loc
     const HH = ('00' + date.getHours()).slice(-2);
     const mm = ('00' + date.getMinutes()).slice(-2);
     const datetimeString = `${yyyy}/${MM}/${dd} ${HH}:${mm}`;
-    return type === 'LocalwithOffset'
+    return formatType === 'LocalwithOffset'
         ? `${datetimeString}(${getTimezoneOffset()})`
         : datetimeString;
 }
 
 /**
+ * Represents a parsed cron expression.
+ * It contains valid values for each field: minute, hour, day of month, month, and day of week.
+ */
+class ParsedCronExpression {
+    readonly minute: number[];
+    readonly hour: number[];
+    readonly dom: number[];
+    readonly month: number[];
+    readonly dow: number[];
+
+    /**
+     * @param {number[]} minute Valid minute values.
+     * @param {number[]} hour Valid hour values.
+     * @param {number[]} dom Valid days of month.
+     * @param {number[]} month Valid months.
+     * @param {number[]} dow Valid days of week.
+     */
+    constructor(minute: number[], hour: number[], dom: number[], month: number[], dow: number[]) {
+        this.minute = minute;
+        this.hour = hour;
+        this.dom = dom;
+        this.month = month;
+        this.dow = dow;
+    }
+
+    /**
+     * Returns if the date matches the parsed cron expression.
+     * @param {Date} [date] The date to validate.
+     * @returns {boolean} True if the date matches the cron expression, false otherwise.
+     */
+    test(date: Date): boolean {
+        return this.minute.includes(date.getMinutes()) &&
+            this.hour.includes(date.getHours()) &&
+            this.dom.includes(date.getDate()) &&
+            this.month.includes(date.getMonth() + 1) &&
+            this.dow.includes(date.getDay());
+    }
+
+    /**
+     * Returns the next scheduled date after the given date.
+     * @param {Date} [startDate] The date to start from.
+     * @returns {Date | undefined} The next scheduled date, or undefined if not found.
+     */
+    getPreviews(startDate: Date = new Date()): CronScheduleIterator {
+        return new CronPreview(this.minute, this.hour, this.dom, this.month, this.dow, startDate);
+    }
+}
+
+
+/**
+ * Iterator for cron schedule dates.
+ */
+class CronPreview implements CronScheduleIterator {
+    private minute: number[];
+    private hour: number[];
+    private dom: number[];
+    private month: number[];
+    private dow: number[];
+    private nextDate?: Date = undefined;
+
+    /**
+     * @param {number[]} minute Valid minute values.
+     * @param {number[]} hour Valid hour values.
+     * @param {number[]} dom Valid days of month.
+     * @param {number[]} month Valid months.
+     * @param {number[]} dow Valid days of week.
+     * @param {Date} startDate The date to start from.
+     */
+    constructor(minute: number[], hour: number[], dom: number[], month: number[], dow: number[], startDate: Date) {
+        this.minute = minute;
+        this.hour = hour;
+        this.dom = dom;
+        this.month = month;
+        this.dow = dow;
+        this.nextDate = calculateNextDate(this.minute, this.hour, this.dom, this.month, this.dow, startDate);
+    }
+
+    /**
+     * Returns the iterator itself.
+     * @returns {CronScheduleIterator}
+     */
+    [Symbol.iterator](): CronScheduleIterator {
+        return this;
+    }
+
+    /**
+     * Returns the next scheduled date or marks iteration as done.
+     * @returns {{ value?: Date; done: boolean }}
+     */
+    next(): { value?: Date; done: boolean } {
+        const result = (this.nextDate == undefined) ?
+            {
+                done: true
+            }
+            :
+            {
+                value: new Date(this.nextDate),
+                done: false
+            }
+        this.nextDate = calculateNextDate(this.minute, this.hour, this.dom, this.month, this.dow, this.nextDate);
+        return result;
+    }
+}
+
+/**
+ * Parses a cron expression into a ParsedCronExpression object.
+ * The cron expression must have five fields: minute, hour, day of month, month, and day of week.
+ * @param cronExpression 
+ * @returns {ParsedCronExpression}
+ * @throws {Error} If the cron expression is not valid.
+ */
+const parseCronExpression = (cronExpression: string): ParsedCronExpression => {
+    if (typeof cronExpression !== 'string') {
+        throw new TypeError('Cron expression must be a string');
+    }
+    const fields = cronExpression.trim().split(/\s+/);
+    if (fields.length != 5) {
+        throw new SyntaxError('Cron expression must have five fields');
+    }
+    const minutes = parseField(fields[0], 0, 59, 'minute');
+    const hours = parseField(fields[1], 0, 23, 'hour');
+    const dom = parseField(fields[2], 1, 31, 'day of month');
+    const month = parseField(replaceMonthString(fields[3]), 1, 12, 'month');
+    let dow = parseField(replaceDOWString(fields[4]), 0, 7, 'day of week');
+    if (dow.includes(7)) {
+        // 7 is not a valid day of week in cron, it should be treated as 0 (Sunday)
+        dow.splice(dow.indexOf(7), 1);
+        dow.push(0);
+        dow = [...new Set(dow.sort())];
+    }
+    return new ParsedCronExpression(minutes, hours, dom, month, dow);
+}
+
+// private functions
+
+/**
  * Calculates the offset to the next candidate value.
  * @param {number} current The current value.
- * @param {number[]} candidates Sorted array of candidate values.
+ * @param {number[]} candidates Sorted array of candidate values. (not empty)
  * @param {number} min Minimum value of the range incase of wrap around.
  * @param {number} max Maximum value of the range incase of wrap around.
  * @returns {number} Offset to the next candidate.
  * @throws {Error} If candidates array is empty.
  */
 const toNextValue = (current: number, candidates: number[], min: number, max: number): number => {
-    if (candidates.length == 0) {
-        throw new Error('Candidates array cannot be empty');
-    }
     for (const candidate of candidates) {
         if (candidate >= current) {
             return candidate - current;
@@ -153,7 +289,7 @@ const replaceMonthString = (month: string): string => {
         'MAY': '5', 'JUN': '6', 'JUL': '7', 'AUG': '8',
         'SEP': '9', 'OCT': '10', 'NOV': '11', 'DEC': '12'
     };
-    return month.replace(/JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC/g, match => monthMap[match]);
+    return month.toUpperCase().replace(/JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC/g, match => monthMap[match]);
 }
 
 /**
@@ -166,7 +302,7 @@ const replaceDOWString = (dow: string): string => {
         'SUN': '0', 'MON': '1', 'TUE': '2', 'WED': '3',
         'THU': '4', 'FRI': '5', 'SAT': '6'
     };
-    return dow.replace(/SUN|MON|TUE|WED|THU|FRI|SAT/g, match => dowMap[match]);
+    return dow.toUpperCase().replace(/SUN|MON|TUE|WED|THU|FRI|SAT/g, match => dowMap[match]);
 }
 
 /**
@@ -178,10 +314,7 @@ const replaceDOWString = (dow: string): string => {
  * @returns {number[]} Array of valid numbers for the field.
  */
 const parseField = (field: string, min: number, max: number, fieldName: string): number[] => {
-    if (typeof field !== 'string') {
-        throw new TypeError(`${fieldName} must be a string`);
-    }
-    return [...new Set(field.split(',').map(part => parsePart(part, min, max, fieldName)).flat().sort())];
+    return [...new Set(field.split(',').map(part => parsePart(part, min, max, fieldName)).flat().sort((a, b) => a - b))];
 }
 
 /**
@@ -193,14 +326,16 @@ const parseField = (field: string, min: number, max: number, fieldName: string):
  * @returns {number[]} Array of valid numbers for the part.
  */
 const parsePart = (part: string, min: number, max: number, fieldName: string): number[] => {
-    if (part.split('/').length == 2) {
-        const [rangeString, stepString] = part.split('/');
-        const range = parseRange(rangeString, min, max, fieldName);
+    const regex = /^(?<rangeString>\S+)\/(?<stepString>\d+)$/;
+    const match = part.match(regex)
+    if (match) {
+        const { rangeString, stepString } = match.groups!;
         if (!/^([1-9]\d*)$/.test(stepString)) {
             throw new Error(`${fieldName} field contains invalid step value '${stepString}'`);
         }
         const step: number = parseInt(stepString, 10);
-        return range.filter(value => value % step == 0)
+        const range = parseRange(rangeString, min, max, fieldName);
+        return range.filter(value => value % step == 0);
     }
     return parseRange(part, min, max, fieldName);
 }
@@ -235,96 +370,8 @@ const parseRange = (range: string, min: number, max: number, fieldName: string):
     return Array.from({ length: parts[1] - parts[0] + 1 }, (_, i) => parts[0] + i);
 }
 
-/**
- * Iterator for cron schedule dates.
- */
-class CronPreview implements CronScheduleIterator {
-    private minute: number[];
-    private hour: number[];
-    private dom: number[];
-    private month: number[];
-    private dow: number[];
-    private nextDate?: Date = undefined;
-
-    /**
-     * @param {number[]} minute Valid minute values.
-     * @param {number[]} hour Valid hour values.
-     * @param {number[]} dom Valid days of month.
-     * @param {number[]} month Valid months.
-     * @param {number[]} dow Valid days of week.
-     * @param {Date} startDate The date to start from.
-     */
-    constructor(minute: number[], hour: number[], dom: number[], month: number[], dow: number[], startDate: Date) {
-        this.minute = minute;
-        this.hour = hour;
-        this.dom = dom;
-        this.month = month;
-        this.dow = dow;
-        this.nextDate = calculateNextDate(this.minute, this.hour, this.dom, this.month, this.dow, startDate);
-    }
-
-    /**
-     * Returns the iterator itself.
-     * @returns {CronScheduleIterator}
-     */
-    [Symbol.iterator](): CronScheduleIterator {
-        return this;
-    }
-
-    /**
-     * Returns the next scheduled date or marks iteration as done.
-     * @returns {{ value?: Date; done: boolean }}
-     */
-    next(): { value?: Date; done: boolean } {
-        const result = (this.nextDate == undefined) ?
-            {
-                done: true
-            }
-            :
-            {
-                value: new Date(this.nextDate),
-                done: false
-            }
-        this.nextDate = calculateNextDate(this.minute, this.hour, this.dom, this.month, this.dow, this.nextDate);
-        return result;
-    }
-}
-
-/**
- * Parses a cron expression and returns an iterator for scheduled dates.
- * @param {string} cronExpression The cron expression string.
- * @param {Date} [startDate] The date to start from (default: now).
- * @returns {CronScheduleIterator} An iterator for scheduled dates.
- * @throws {Error} If the expression is invalid.
- */
-const parseCronExpression = (cronExpression: string, startDate: Date = new Date()): CronScheduleIterator => {
-    if (typeof cronExpression !== 'string') {
-        throw new TypeError('Cron expression must be a string');
-    }
-    const fields = cronExpression.trim().split(/\s+/);
-    if (fields.length != 5) {
-        throw new Error('Cron expression must have five fields');
-    }
-    const minutes = parseField(fields[0], 0, 59, 'minute');
-    const hours = parseField(fields[1], 0, 23, 'hour');
-    const dom = parseField(fields[2], 1, 31, 'day of month');
-    const month = parseField(replaceMonthString(fields[3]), 1, 12, 'month');
-    let dow = parseField(replaceDOWString(fields[4]), 0, 7, 'day of week');
-    if (dow.includes(7)) {
-        // 7 is not a valid day of week in cron, it should be treated as 0 (Sunday)
-        dow.splice(dow.indexOf(7), 1);
-        dow.push(0);
-        dow = [...new Set(dow.sort())];
-    }
-    // validate each field
-    if (minutes.length === 0 || hours.length === 0 || dom.length === 0 || month.length === 0 || dow.length === 0) {
-        throw new Error('Cron expression contains invalid fields');
-    }
-    return new CronPreview(minutes, hours, dom, month, dow, startDate);
-}
 
 export {
-    CronPreview, formatDate,
-    getTimezoneOffset, parseCronExpression, type CronScheduleIterator
+    CronPreview, formatDate, getTimezoneOffset, parseCronExpression, ParsedCronExpression, type CronScheduleIterator
 };
 
